@@ -1,12 +1,10 @@
 use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use std::process::Command;
 
 use crate::things::model::Task;
 
-const ANTHROPIC_API_URL: &str = "https://api.anthropic.com/v1/messages";
-const MODEL: &str = "claude-sonnet-4-20250514";
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct TaskEnhancement {
     pub title: String,
     pub description: String,
@@ -14,42 +12,7 @@ pub struct TaskEnhancement {
     pub steps: Vec<String>,
 }
 
-#[derive(Serialize)]
-struct Message {
-    role: &'static str,
-    content: String,
-}
-
-#[derive(Serialize)]
-struct ApiRequest {
-    model: &'static str,
-    max_tokens: u32,
-    messages: Vec<Message>,
-    system: String,
-}
-
-#[derive(Deserialize)]
-struct ApiResponse {
-    content: Vec<ContentBlock>,
-}
-
-#[derive(Deserialize)]
-struct ContentBlock {
-    text: Option<String>,
-}
-
-fn api_key() -> Result<String> {
-    std::env::var("ANTHROPIC_API_KEY").context(
-        "ANTHROPIC_API_KEY not set. Export it to enable Claude-powered triage enhancement.",
-    )
-}
-
-/// Call the Claude API to enhance a task's title, description, project classification, and steps.
-pub async fn enhance_task(task: &Task) -> Result<TaskEnhancement> {
-    let api_key = api_key()?;
-    let client = reqwest::Client::new();
-
-    let system_prompt = r#"You are a task triage assistant for a software development workflow. You receive raw task titles and notes from a personal inbox and must produce a structured enhancement.
+const SYSTEM_PROMPT: &str = r#"You are a task triage assistant for a software development workflow. You receive raw task titles and notes from a personal inbox and must produce a structured enhancement.
 
 Your output MUST be valid JSON with exactly these fields:
 {
@@ -89,7 +52,10 @@ For bugs, include: reproduction, root cause analysis, fix, verification.
 
 Respond with ONLY the JSON object, no markdown fences, no extra text."#;
 
-    let user_content = format!(
+/// Call the Claude CLI to enhance a task's title, description, project classification, and steps.
+/// Uses the `claude` CLI with print mode, which inherits the user's console login authentication.
+pub async fn enhance_task(task: &Task) -> Result<TaskEnhancement> {
+    let user_prompt = format!(
         "Task title: {}\nTask notes: {}\nExisting checklist items: {}",
         task.title,
         if task.notes.is_empty() {
@@ -108,53 +74,44 @@ Respond with ONLY the JSON object, no markdown fences, no extra text."#;
         }
     );
 
-    let request = ApiRequest {
-        model: MODEL,
-        max_tokens: 1024,
-        messages: vec![Message {
-            role: "user",
-            content: user_content,
-        }],
-        system: system_prompt.to_string(),
-    };
+    // Run claude CLI in print mode (non-interactive, single prompt/response)
+    // Unset CLAUDECODE env var to allow nested invocation
+    let output = tokio::task::spawn_blocking(move || {
+        Command::new("claude")
+            .arg("-p")
+            .arg(&user_prompt)
+            .arg("--system-prompt")
+            .arg(SYSTEM_PROMPT)
+            .arg("--model")
+            .arg("sonnet")
+            .env_remove("CLAUDECODE")
+            .output()
+            .context("Failed to run claude CLI. Is it installed?")
+    })
+    .await??;
 
-    let response = client
-        .post(ANTHROPIC_API_URL)
-        .header("x-api-key", &api_key)
-        .header("anthropic-version", "2023-06-01")
-        .header("content-type", "application/json")
-        .json(&request)
-        .send()
-        .await
-        .context("Failed to call Claude API")?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        anyhow::bail!("Claude API error ({}): {}", status, body);
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("claude CLI error: {}", stderr.trim());
     }
 
-    let api_response: ApiResponse = response
-        .json()
-        .await
-        .context("Failed to parse Claude API response")?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    let text = text.trim();
 
-    let text = api_response
-        .content
-        .first()
-        .and_then(|b| b.text.as_ref())
-        .context("Empty response from Claude API")?;
-
-    // Parse the JSON response, stripping any markdown fences if present
+    // Strip markdown fences if present
     let json_str = text
-        .trim()
         .trim_start_matches("```json")
         .trim_start_matches("```")
         .trim_end_matches("```")
         .trim();
 
     let enhancement: TaskEnhancement =
-        serde_json::from_str(json_str).context("Failed to parse Claude's JSON response")?;
+        serde_json::from_str(json_str).with_context(|| {
+            format!(
+                "Failed to parse Claude's response as JSON. Raw output:\n{}",
+                text
+            )
+        })?;
 
     Ok(enhancement)
 }
