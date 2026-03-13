@@ -1,5 +1,7 @@
 use anyhow::{Context, Result};
-use std::process::Command;
+use serde_json::json;
+use std::io::Write;
+use std::process::{Command, Stdio};
 
 /// Execute an AppleScript and return stdout
 fn run_applescript(script: &str) -> Result<String> {
@@ -154,37 +156,53 @@ end tell"#
     Ok(())
 }
 
-/// Add checklist items to a task using the things:///update URL scheme
-/// This is the only reliable way to add checklist items programmatically
+/// Add checklist items to a task using the things:///json URL scheme.
+/// Uses serde_json for correct serialization and pipes JSON via stdin
+/// to avoid AppleScript/shell string escaping issues.
 pub fn add_checklist_items(task_id: &str, items: &[String]) -> Result<()> {
     if items.is_empty() {
         return Ok(());
     }
 
-    // Use things:///add-json approach via AppleScript
-    let json_items: Vec<String> = items
+    let checklist_items: Vec<serde_json::Value> = items
         .iter()
-        .map(|item| {
-            let escaped = item.replace('\\', "\\\\").replace('"', "\\\"");
-            format!("{{\"title\":\"{}\"}}", escaped)
-        })
+        .map(|item| json!({"title": item}))
         .collect();
 
-    let json_array = format!("[{}]", json_items.join(","));
+    let payload = json!([{
+        "type": "to-do",
+        "operation": "update",
+        "id": task_id,
+        "checklist-items": checklist_items,
+    }]);
 
-    let json_payload = format!(
-        r#"[{{"type":"to-do","operation":"update","id":"{}","checklist-items":{}}}]"#,
-        task_id, json_array
-    );
+    let json_payload = serde_json::to_string(&payload)
+        .context("Failed to serialize checklist items to JSON")?;
 
-    let escaped_json = json_payload.replace('\\', "\\\\").replace('"', "\\\"");
+    // Pipe JSON via stdin to python3 for URL encoding, then open the Things URL.
+    // This avoids all AppleScript/shell string escaping issues.
+    let mut child = Command::new("python3")
+        .arg("-c")
+        .arg("import urllib.parse, sys, subprocess; data = sys.stdin.read().strip(); encoded = urllib.parse.quote(data); subprocess.run(['open', 'things:///json?data=' + encoded])")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("Failed to spawn python3 for URL encoding")?;
 
-    // Use shell script for URL encoding within AppleScript
-    run_applescript(&format!(
-        r#"set jsonPayload to "{escaped_json}"
-set encodedJSON to do shell script "python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))' " & quoted form of jsonPayload
-open location "things:///json?data=" & encodedJSON"#
-    ))?;
+    child
+        .stdin
+        .take()
+        .context("Failed to open stdin")?
+        .write_all(json_payload.as_bytes())
+        .context("Failed to write JSON to python3 stdin")?;
+
+    let output = child.wait_with_output().context("Failed to wait for python3")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("Failed to add checklist items: {}", stderr.trim());
+    }
 
     // Give Things a moment to process
     std::thread::sleep(std::time::Duration::from_millis(500));
