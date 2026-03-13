@@ -24,7 +24,11 @@ enum Commands {
     Ui,
 
     /// Triage inbox tasks: assign IDs, enhance descriptions, classify projects
-    Triage,
+    Triage {
+        /// Run continuously, checking the inbox every 10 seconds
+        #[arg(long, short)]
+        watch: bool,
+    },
 
     /// Run the agent loop: scan for today's agent tasks and execute them
     Run,
@@ -35,7 +39,6 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Initialize logging
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env().add_directive("specflow=info".parse()?))
         .with_target(false)
@@ -45,7 +48,13 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::Ui => run_ui().await,
-        Commands::Triage => run_triage().await,
+        Commands::Triage { watch } => {
+            if watch {
+                run_triage_watch().await
+            } else {
+                run_triage_once().await
+            }
+        }
         Commands::Run => run_agents().await,
         Commands::Status => show_status(),
     }
@@ -54,7 +63,6 @@ async fn main() -> Result<()> {
 async fn run_ui() -> Result<()> {
     let agent_states = Arc::new(Mutex::new(Vec::new()));
 
-    // Start agent loop in background
     let states_clone = agent_states.clone();
     tokio::spawn(async move {
         if let Err(e) = agent::runner::run_agent_loop(states_clone).await {
@@ -62,7 +70,6 @@ async fn run_ui() -> Result<()> {
         }
     });
 
-    // Run TUI
     let mut terminal = ratatui::init();
     let app = tui::app::App::new(agent_states)?;
     let result = app.run(&mut terminal).await;
@@ -71,9 +78,9 @@ async fn run_ui() -> Result<()> {
     result
 }
 
-async fn run_triage() -> Result<()> {
+async fn run_triage_once() -> Result<()> {
     let processor = triage::processor::TriageProcessor::new()?;
-    let results = processor.process_inbox()?;
+    let results = processor.process_inbox().await?;
 
     if results.is_empty() {
         println!("No tasks in inbox.");
@@ -90,6 +97,30 @@ async fn run_triage() -> Result<()> {
     }
 
     Ok(())
+}
+
+async fn run_triage_watch() -> Result<()> {
+    println!("Continuous triage mode. Checking inbox every 10 seconds.");
+    println!("Press Ctrl+C to stop.\n");
+
+    loop {
+        let processor = triage::processor::TriageProcessor::new()?;
+        let results = processor.process_inbox().await?;
+
+        if !results.is_empty() {
+            for r in &results {
+                println!(
+                    "  Triaged: {} -> {} (project: {})",
+                    r.original_title,
+                    r.new_title,
+                    r.project.as_deref().unwrap_or("Agents")
+                );
+            }
+            println!("  {} tasks triaged.\n", results.len());
+        }
+
+        tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+    }
 }
 
 async fn run_agents() -> Result<()> {

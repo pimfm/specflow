@@ -108,7 +108,7 @@ impl App {
                                 // Trigger triage
                                 self.add_log("Running inbox triage...".to_string());
                                 match crate::triage::processor::TriageProcessor::new() {
-                                    Ok(processor) => match processor.process_inbox() {
+                                    Ok(processor) => match processor.process_inbox().await {
                                         Ok(results) => {
                                             for r in &results {
                                                 self.add_log(format!(
