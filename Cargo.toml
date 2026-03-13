@@ -1,0 +1,42 @@
+[package]
+name = "specflow"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# TUI
+ratatui = "0.29"
+crossterm = "0.28"
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Things 3 database access
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Date/time
+chrono = { version = "0.4", features = ["serde"] }
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Error handling
+anyhow = "1"
+
+# UUID generation
+uuid = { version = "1", features = ["v4"] }
+
+# URL handling
+url = "2"
+reqwest = { version = "0.12", features = ["blocking"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# For running AppleScript
+[target.'cfg(target_os = "macos")'.dependencies]
