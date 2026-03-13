@@ -51,7 +51,7 @@ impl ThingsDb {
 
     /// Read all actionable agent tasks by scanning:
     /// 1. The Today view — any task scheduled for today, regardless of area
-    /// 2. The Agents area — any task in the Agents area or its projects, regardless of schedule
+    /// 2. The Agents area — tasks scheduled for today in the Agents area or its projects
     /// Only returns tasks that have an agent- tag and do NOT have the agent-done tag.
     pub fn agent_today_tasks(&self) -> Result<Vec<Task>> {
         let conn = self.conn()?;
@@ -76,7 +76,8 @@ impl ThingsDb {
         let today_tasks = self.read_tasks_with_params(&conn, &mut today_stmt, rusqlite::params![today_int])?;
         all_tasks.extend(today_tasks);
 
-        // 2. Agents area: all open tasks in Agents area or its projects, regardless of schedule
+        // 2. Agents area: tasks scheduled for today in Agents area or its projects
+        //    Future-dated tasks stay untouched until their scheduled date.
         let agents_area_uuid: Option<String> = conn
             .query_row(
                 "SELECT uuid FROM TMArea WHERE title = 'Agents'",
@@ -92,9 +93,11 @@ impl ThingsDb {
                  WHERE t.type = 0
                    AND t.trashed = 0
                    AND t.status = 0
-                   AND (t.area = ?1 OR t.project IN (SELECT uuid FROM TMTask WHERE type = 1 AND area = ?1 AND trashed = 0))"
+                   AND (t.area = ?1 OR t.project IN (SELECT uuid FROM TMTask WHERE type = 1 AND area = ?1 AND trashed = 0))
+                   AND t.start = 1
+                   AND t.startDate = ?2"
             )?;
-            let agents_tasks = self.read_tasks_with_params(&conn, &mut agents_stmt, rusqlite::params![agents_uuid])?;
+            let agents_tasks = self.read_tasks_with_params(&conn, &mut agents_stmt, rusqlite::params![agents_uuid, today_int])?;
             all_tasks.extend(agents_tasks);
         }
 
