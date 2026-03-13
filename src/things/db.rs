@@ -49,19 +49,34 @@ impl ThingsDb {
         Ok(tasks)
     }
 
-    /// Read all tasks in the Agents area that are scheduled for today, have an agent tag, and do NOT have agent-done tag
+    /// Read all actionable agent tasks by scanning:
+    /// 1. The Today view — any task scheduled for today, regardless of area
+    /// 2. The Agents area — any task in the Agents area or its projects, regardless of schedule
+    /// Only returns tasks that have an agent- tag and do NOT have the agent-done tag.
     pub fn agent_today_tasks(&self) -> Result<Vec<Task>> {
         let conn = self.conn()?;
 
-        // Get today's date as integer (YYYYMMDD format used by Things internally)
         // Things stores startDate as days since 2001-01-01 (Core Data reference date)
-        // Actually, let's check: Things startDate is an integer in format like 132890
-        // It's actually the number of days since the Core Data reference date (2001-01-01)
         let today = chrono::Local::now().date_naive();
         let core_data_epoch = chrono::NaiveDate::from_ymd_opt(2001, 1, 1).unwrap();
         let today_int = (today - core_data_epoch).num_days();
 
-        // Get the Agents area UUID
+        let mut all_tasks = Vec::new();
+
+        // 1. Today view: tasks scheduled for today (start=1, startDate=today), any area
+        let mut today_stmt = conn.prepare(
+            "SELECT t.uuid, t.title, t.notes, t.status, t.project, t.area, t.start, t.startDate, t.creationDate
+             FROM TMTask t
+             WHERE t.type = 0
+               AND t.trashed = 0
+               AND t.status = 0
+               AND t.start = 1
+               AND t.startDate = ?1"
+        )?;
+        let today_tasks = self.read_tasks_with_params(&conn, &mut today_stmt, rusqlite::params![today_int])?;
+        all_tasks.extend(today_tasks);
+
+        // 2. Agents area: all open tasks in Agents area or its projects, regardless of schedule
         let agents_area_uuid: Option<String> = conn
             .query_row(
                 "SELECT uuid FROM TMArea WHERE title = 'Agents'",
@@ -70,53 +85,22 @@ impl ThingsDb {
             )
             .ok();
 
-        let agents_uuid = match agents_area_uuid {
-            Some(uuid) => uuid,
-            None => return Ok(vec![]),
-        };
+        if let Some(ref agents_uuid) = agents_area_uuid {
+            let mut agents_stmt = conn.prepare(
+                "SELECT t.uuid, t.title, t.notes, t.status, t.project, t.area, t.start, t.startDate, t.creationDate
+                 FROM TMTask t
+                 WHERE t.type = 0
+                   AND t.trashed = 0
+                   AND t.status = 0
+                   AND (t.area = ?1 OR t.project IN (SELECT uuid FROM TMTask WHERE type = 1 AND area = ?1 AND trashed = 0))"
+            )?;
+            let agents_tasks = self.read_tasks_with_params(&conn, &mut agents_stmt, rusqlite::params![agents_uuid])?;
+            all_tasks.extend(agents_tasks);
+        }
 
-        // Get all project UUIDs in the Agents area
-        let mut proj_stmt = conn.prepare(
-            "SELECT uuid FROM TMTask WHERE type = 1 AND area = ?1 AND trashed = 0 AND status = 0"
-        )?;
-        let _project_uuids: Vec<String> = proj_stmt
-            .query_map([&agents_uuid], |row| row.get::<_, String>(0))?
-            .filter_map(|r| r.ok())
-            .collect();
-
-        // Build query for tasks in Agents area or its projects, scheduled for today
-        // start=1 means "scheduled", start=2 means "someday"
-        // A task is "today" when startDate = today_int OR start=2 with todayIndex set
-        let mut all_tasks = Vec::new();
-
-        // Tasks directly in Agents area
-        let mut stmt = conn.prepare(
-            "SELECT t.uuid, t.title, t.notes, t.status, t.project, t.area, t.start, t.startDate, t.creationDate
-             FROM TMTask t
-             WHERE t.type = 0
-               AND t.trashed = 0
-               AND t.status = 0
-               AND (t.area = ?1 OR t.project IN (SELECT uuid FROM TMTask WHERE type = 1 AND area = ?1 AND trashed = 0))
-               AND t.start = 1
-               AND t.startDate = ?2"
-        )?;
-
-        let tasks = self.read_tasks_with_params(&conn, &mut stmt, rusqlite::params![&agents_uuid, today_int])?;
-        all_tasks.extend(tasks);
-
-        // Also get tasks that appear in Today view (start=2 means "today" in Things)
-        let mut stmt2 = conn.prepare(
-            "SELECT t.uuid, t.title, t.notes, t.status, t.project, t.area, t.start, t.startDate, t.creationDate
-             FROM TMTask t
-             WHERE t.type = 0
-               AND t.trashed = 0
-               AND t.status = 0
-               AND (t.area = ?1 OR t.project IN (SELECT uuid FROM TMTask WHERE type = 1 AND area = ?1 AND trashed = 0))
-               AND t.start = 2"
-        )?;
-
-        let tasks2 = self.read_tasks_with_params(&conn, &mut stmt2, rusqlite::params![&agents_uuid])?;
-        all_tasks.extend(tasks2);
+        // Deduplicate by UUID (a task may appear in both Today and Agents area)
+        let mut seen = std::collections::HashSet::new();
+        all_tasks.retain(|t| seen.insert(t.uuid.clone()));
 
         // Filter: must have an agent- tag AND must NOT have agent-done tag
         let filtered: Vec<Task> = all_tasks
