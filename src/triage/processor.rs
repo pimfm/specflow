@@ -17,21 +17,14 @@ impl TriageProcessor {
         })
     }
 
-    /// Process all tasks in the inbox that have an agent tag
+    /// Process all tasks in the inbox
     pub fn process_inbox(&self) -> Result<Vec<TriagedTask>> {
         let inbox_tasks = self.db.inbox_tasks()?;
-        info!("Found {} tasks in inbox", inbox_tasks.len());
-
-        let agent_tasks: Vec<&Task> = inbox_tasks
-            .iter()
-            .filter(|t| t.is_agent_task())
-            .collect();
-
-        info!("Found {} agent-tagged tasks to triage", agent_tasks.len());
+        info!("Found {} tasks in inbox to triage", inbox_tasks.len());
 
         let mut results = Vec::new();
 
-        for task in agent_tasks {
+        for task in &inbox_tasks {
             match self.triage_task(task) {
                 Ok(result) => results.push(result),
                 Err(e) => {

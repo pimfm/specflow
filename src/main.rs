@@ -76,7 +76,7 @@ async fn run_triage() -> Result<()> {
     let results = processor.process_inbox()?;
 
     if results.is_empty() {
-        println!("No agent-tagged tasks in inbox.");
+        println!("No tasks in inbox.");
     } else {
         for r in &results {
             println!(
@@ -109,8 +109,7 @@ fn show_status() -> Result<()> {
     let db = things::db::ThingsDb::new()?;
 
     let inbox = db.inbox_tasks()?;
-    let agent_inbox: Vec<_> = inbox.iter().filter(|t| t.is_agent_task()).collect();
-    println!("Inbox: {} total, {} agent-tagged", inbox.len(), agent_inbox.len());
+    println!("Inbox: {} tasks pending triage", inbox.len());
 
     let today_tasks = db.agent_today_tasks()?;
     println!("Agent tasks for today: {}", today_tasks.len());
