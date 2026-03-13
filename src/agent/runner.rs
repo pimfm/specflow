@@ -2,10 +2,11 @@ use anyhow::Result;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
-use tracing::{info, warn, error};
+use tracing::{error, info, warn};
 
-use crate::things::db::ThingsDb;
 use super::executor;
+use crate::sync::engine::SyncEngine;
+use crate::things::db::ThingsDb;
 
 /// State of a running agent task
 #[derive(Debug, Clone)]
@@ -13,6 +14,8 @@ pub struct AgentState {
     pub task_uuid: String,
     pub task_title: String,
     pub status: AgentStatus,
+    pub bead_id: Option<String>,
+    pub rig: Option<String>,
     pub error: Option<String>,
 }
 
@@ -20,6 +23,7 @@ pub struct AgentState {
 pub enum AgentStatus {
     Queued,
     Running,
+    Dispatched,
     Completed,
     Failed,
 }
@@ -29,6 +33,7 @@ impl std::fmt::Display for AgentStatus {
         match self {
             AgentStatus::Queued => write!(f, "QUEUED"),
             AgentStatus::Running => write!(f, "RUNNING"),
+            AgentStatus::Dispatched => write!(f, "DISPATCHED"),
             AgentStatus::Completed => write!(f, "DONE"),
             AgentStatus::Failed => write!(f, "FAILED"),
         }
@@ -37,13 +42,42 @@ impl std::fmt::Display for AgentStatus {
 
 pub type SharedAgentStates = Arc<Mutex<Vec<AgentState>>>;
 
-/// Continuously scan for agent tasks and execute them
+/// Continuously scan for agent tasks, execute them via GT, and sync completions.
 pub async fn run_agent_loop(states: SharedAgentStates) -> Result<()> {
     let db = ThingsDb::new()?;
     let scan_interval = Duration::from_secs(30);
+    let sync_interval = Duration::from_secs(60);
+    let mut last_sync = std::time::Instant::now();
 
     loop {
         info!("Scanning for agent tasks...");
+
+        // Periodically sync completions from GT back to Things
+        if last_sync.elapsed() >= sync_interval {
+            match SyncEngine::new() {
+                Ok(mut sync) => match sync.sync_completions() {
+                    Ok(results) => {
+                        for r in &results {
+                            info!(
+                                "Sync: bead {} -> Things {} ({})",
+                                r.bead_id, r.things_uuid, r.action
+                            );
+                            // Update agent state if we have a match
+                            let mut states_lock = states.lock().await;
+                            if let Some(state) = states_lock
+                                .iter_mut()
+                                .find(|s| s.task_uuid == r.things_uuid)
+                            {
+                                state.status = AgentStatus::Completed;
+                            }
+                        }
+                    }
+                    Err(e) => warn!("Sync check failed: {}", e),
+                },
+                Err(e) => warn!("Could not init sync engine: {}", e),
+            }
+            last_sync = std::time::Instant::now();
+        }
 
         match db.agent_today_tasks() {
             Ok(tasks) => {
@@ -65,6 +99,8 @@ pub async fn run_agent_loop(states: SharedAgentStates) -> Result<()> {
                             task_uuid: task.uuid.clone(),
                             task_title: task.title.clone(),
                             status: AgentStatus::Queued,
+                            bead_id: None,
+                            rig: None,
                             error: None,
                         });
                     }
@@ -84,32 +120,52 @@ pub async fn run_agent_loop(states: SharedAgentStates) -> Result<()> {
                             }
                         }
 
-                        // Execute
-                        match executor::execute_task(&task_clone).await {
-                            Ok(result) => {
-                                info!("Task #{} completed: MR {}", result.task_id, result.mr_url);
-                                let mut states_lock = states_clone.lock().await;
-                                if let Some(state) = states_lock
-                                    .iter_mut()
-                                    .find(|s| s.task_uuid == task_clone.uuid)
-                                {
-                                    state.status = AgentStatus::Completed;
+                        // Execute with GT integration
+                        let sync_result = SyncEngine::new();
+                        match sync_result {
+                            Ok(mut sync) => {
+                                match executor::execute_task(&task_clone, &mut sync).await {
+                                    Ok(result) => {
+                                        info!(
+                                            "Task #{} dispatched: bead {} -> rig {}",
+                                            result.task_id, result.bead_id, result.rig
+                                        );
+                                        let mut states_lock = states_clone.lock().await;
+                                        if let Some(state) = states_lock
+                                            .iter_mut()
+                                            .find(|s| s.task_uuid == task_clone.uuid)
+                                        {
+                                            state.status = AgentStatus::Dispatched;
+                                            state.bead_id = Some(result.bead_id);
+                                            state.rig = Some(result.rig);
+                                        }
+                                    }
+                                    Err(e) => {
+                                        error!("Task '{}' failed: {}", task_clone.title, e);
+                                        let _ = crate::things::applescript::set_tags(
+                                            &task_clone.uuid,
+                                            &["agent-error"],
+                                        );
+                                        let mut states_lock = states_clone.lock().await;
+                                        if let Some(state) = states_lock
+                                            .iter_mut()
+                                            .find(|s| s.task_uuid == task_clone.uuid)
+                                        {
+                                            state.status = AgentStatus::Failed;
+                                            state.error = Some(e.to_string());
+                                        }
+                                    }
                                 }
                             }
                             Err(e) => {
-                                error!("Task '{}' failed: {}", task_clone.title, e);
-                                // Tag as error
-                                let _ = crate::things::applescript::set_tags(
-                                    &task_clone.uuid,
-                                    &["agent-error"],
-                                );
+                                error!("Could not init sync engine: {}", e);
                                 let mut states_lock = states_clone.lock().await;
                                 if let Some(state) = states_lock
                                     .iter_mut()
                                     .find(|s| s.task_uuid == task_clone.uuid)
                                 {
                                     state.status = AgentStatus::Failed;
-                                    state.error = Some(e.to_string());
+                                    state.error = Some(format!("GT not available: {}", e));
                                 }
                             }
                         }
