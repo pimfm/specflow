@@ -31,6 +31,7 @@ pub struct ChecklistItem {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct Project {
     pub uuid: String,
     pub title: String,
@@ -39,10 +40,6 @@ pub struct Project {
 }
 
 impl Task {
-    pub fn has_tag(&self, tag: &str) -> bool {
-        self.tags.iter().any(|t| t == tag)
-    }
-
     pub fn is_agent_task(&self) -> bool {
         self.tags.iter().any(|t| t.starts_with("agent-"))
     }

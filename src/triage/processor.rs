@@ -4,12 +4,6 @@ use tracing::{info, warn};
 use crate::things::{applescript, db::ThingsDb, model::Task};
 use super::id_tracker::IdTracker;
 
-/// The agent-queued tag we use to mark tasks that need triage
-const AGENT_TAG: &str = "agent-queued";
-
-/// Projects available in the Agents area
-const PROJECTS: &[&str] = &["Development", "Business", "Marketing", "Customer Service"];
-
 pub struct TriageProcessor {
     db: ThingsDb,
     id_tracker: IdTracker,
@@ -103,8 +97,6 @@ impl TriageProcessor {
 
     fn analyze_task(&self, task: &Task) -> Result<TaskAnalysis> {
         // Extract URLs from notes for context
-        let urls = extract_urls(&task.notes);
-
         // Determine the best project based on title and notes content
         let project = classify_project(&task.title, &task.notes);
 
@@ -128,13 +120,6 @@ impl TriageProcessor {
             schedule: Schedule::Today,
         })
     }
-}
-
-fn extract_urls(text: &str) -> Vec<String> {
-    text.split_whitespace()
-        .filter(|w| w.starts_with("http://") || w.starts_with("https://"))
-        .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric() && c != '/' && c != ':' && c != '.' && c != '-' && c != '_' && c != '?' && c != '=' && c != '&').to_string())
-        .collect()
 }
 
 fn classify_project(title: &str, notes: &str) -> Option<String> {
@@ -227,6 +212,7 @@ fn generate_steps(title: &str, notes: &str, existing_checklist: &[crate::things:
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct TriagedTask {
     pub uuid: String,
     pub id: u32,
@@ -239,6 +225,7 @@ pub struct TriagedTask {
 #[derive(Debug, Clone)]
 pub enum Schedule {
     Today,
+    #[allow(dead_code)]
     Date(String), // YYYY-MM-DD
 }
 

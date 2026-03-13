@@ -26,6 +26,7 @@ pub enum Tab {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct InboxItem {
     pub uuid: String,
     pub title: String,

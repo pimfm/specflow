@@ -161,10 +161,6 @@ pub fn add_checklist_items(task_id: &str, items: &[String]) -> Result<()> {
         return Ok(());
     }
 
-    // Build the checklist items as newline-separated, URL-encoded
-    let items_str = items.join("\n");
-    let encoded_items = urlencoding(&items_str);
-
     // Use things:///add-json approach via AppleScript
     let json_items: Vec<String> = items
         .iter()
@@ -195,37 +191,3 @@ open location "things:///json?data=" & encodedJSON"#
     Ok(())
 }
 
-fn urlencoding(s: &str) -> String {
-    let mut result = String::new();
-    for byte in s.bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                result.push(byte as char);
-            }
-            _ => {
-                result.push_str(&format!("%{:02X}", byte));
-            }
-        }
-    }
-    result
-}
-
-/// Get all tasks from inbox via AppleScript (as a cross-check)
-pub fn get_inbox_task_ids() -> Result<Vec<String>> {
-    let result = run_applescript(
-        r#"tell application "Things3"
-  set todoList to every to do of list "Inbox"
-  set output to ""
-  repeat with t in todoList
-    set output to output & id of t & linefeed
-  end repeat
-  return output
-end tell"#,
-    )?;
-
-    Ok(result
-        .lines()
-        .filter(|l| !l.is_empty())
-        .map(|l| l.to_string())
-        .collect())
-}

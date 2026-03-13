@@ -79,7 +79,7 @@ impl ThingsDb {
         let mut proj_stmt = conn.prepare(
             "SELECT uuid FROM TMTask WHERE type = 1 AND area = ?1 AND trashed = 0 AND status = 0"
         )?;
-        let project_uuids: Vec<String> = proj_stmt
+        let _project_uuids: Vec<String> = proj_stmt
             .query_map([&agents_uuid], |row| row.get::<_, String>(0))?
             .filter_map(|r| r.ok())
             .collect();
@@ -215,7 +215,7 @@ impl ThingsDb {
             let status_int: i32 = row.get(3)?;
             let project_uuid: Option<String> = row.get(4)?;
             let area_uuid: Option<String> = row.get(5)?;
-            let start: Option<i32> = row.get(6)?;
+            let _start: Option<i32> = row.get(6)?;
             let start_date: Option<i64> = row.get(7)?;
             let creation_date: Option<f64> = row.get(8)?;
 

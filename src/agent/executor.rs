@@ -6,13 +6,6 @@ use tracing::info;
 use crate::things::{applescript, model::Task};
 use crate::spec::{writer, gherkin};
 
-/// Configuration for a repository that we interact with
-#[derive(Debug, Clone)]
-pub struct RepoConfig {
-    pub path: PathBuf,
-    pub gitlab_remote: String,
-}
-
 /// Execute the full agent pipeline for a single task
 pub async fn execute_task(task: &Task) -> Result<ExecutionResult> {
     let task_id = extract_task_id(&task.title)?;
@@ -291,6 +284,7 @@ fn run_git(cwd: &Path, args: &[&str]) -> Result<String> {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct ExecutionResult {
     pub task_id: String,
     pub branch_name: String,
